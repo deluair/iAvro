@@ -8,3 +8,4 @@ AvroKeyboard.xcodeproj/project.xcworkspace/xcuserdata/
 
 # Local build output
 build/
+xcbuild/

@@ -42,6 +42,7 @@
 
 - (void)findCurrentCandidates {
     [_currentCandidates removeAllObjects];
+    _prevSelected = -1;
     if (_composedBuffer && [_composedBuffer length] > 0) {
         NSString* regex = @"(^(?::`|\\.`|[-\\]\\\\~!@#&*()_=+\\[{}'\";<>/?|.,])*?(?=(?:,{2,}))|^(?::`|\\.`|[-\\]\\\\~!@#&*()_=+\\[{}'\";<>/?|.,])*)(.*?(?:,,)*)((?::`|\\.`|[-\\]\\\\~!@#&*()_=+\\[{}'\";<>/?|.,])*$)";
         NSArray* items = [_composedBuffer captureComponentsMatchedByRegex:regex];
@@ -130,8 +131,10 @@
 }
 
 - (void)candidateSelected:(NSAttributedString*)candidateString {
-    [_currentClient insertText:candidateString replacementRange:NSMakeRange(NSNotFound, 0)];
-	
+    // Commit through the live client; the cached client can go stale when the
+    // controller is reused across input sessions on current macOS.
+    [[self client] insertText:candidateString replacementRange:NSMakeRange(NSNotFound, 0)];
+
 	[self clearCompositionBuffer];
 	[_currentCandidates removeAllObjects];
     [self updateCandidatesPanel];
@@ -146,11 +149,16 @@
 }
 
 - (id)composedString:(id)sender {
-	return [[[NSAttributedString alloc] initWithString:_composedBuffer] autorelease];
+	NSString* display = _composedBuffer;
+	if (_prevSelected >= 0 && _prevSelected < (int)[_currentCandidates count]) {
+		display = [_currentCandidates objectAtIndex:_prevSelected];
+	}
+	return [[[NSAttributedString alloc] initWithString:display] autorelease];
 }
 
 - (void)clearCompositionBuffer {
-	[_composedBuffer deleteCharactersInRange:NSMakeRange(0, [_composedBuffer length])];	
+	[_composedBuffer deleteCharactersInRange:NSMakeRange(0, [_composedBuffer length])];
+	_prevSelected = -1;
 }
 
 /*
@@ -181,7 +189,10 @@
     // Returning NO means the original key down will be passed on to the client.
     if ([string isEqualToString:@" "]) {
         if (_currentCandidates && [_currentCandidates count]) {
-            [self candidateSelected:[[Candidates sharedInstance] selectedCandidateString]];
+            // Commit the highlighted candidate (or the first). Tracked locally
+            // because recent macOS does not maintain panel selection state.
+            NSInteger idx = (_prevSelected >= 0 && _prevSelected < (int)[_currentCandidates count]) ? _prevSelected : 0;
+            [self candidateSelected:[_currentCandidates objectAtIndex:idx]];
         }
         return NO;
     }
@@ -216,6 +227,24 @@
 }
 
 - (BOOL)didCommandBySelector:(SEL)aSelector client:(id)sender {
+    // Recent macOS does not forward arrow keys to the candidate panel, so move
+    // the selection here. _prevSelected is the index into _currentCandidates.
+    if ((aSelector == @selector(moveUp:) || aSelector == @selector(moveDown:))
+        && _currentCandidates && [_currentCandidates count] > 0) {
+        int count = (int)[_currentCandidates count];
+        if (_prevSelected < 0) {
+            _prevSelected = 0;
+        } else {
+            _prevSelected += (aSelector == @selector(moveDown:)) ? 1 : -1;
+        }
+        if (_prevSelected < 0) _prevSelected = 0;
+        if (_prevSelected > count - 1) _prevSelected = count - 1;
+        // The legacy candidate panel cannot be programmatically highlighted on
+        // current macOS, so reflect the selection in the inline composing text.
+        [self updateComposition];
+        return YES;
+    }
+
     if ([self respondsToSelector:aSelector]) {
 		// The NSResponder methods like insertNewline: or deleteBackward: are
 		// methods that return void. didCommandBySelector method requires
